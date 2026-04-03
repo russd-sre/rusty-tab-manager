@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; min-width: 350px; padding: 10px; }
+    h3 { margin-top: 0; }
+    .rule-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+    .rule-row input { flex: 1; padding: 6px; border: 1px solid #ccc; border-radius: 4px; }
+    .rule-row .domains { flex: 2; }
+    .rule-row .group { flex: 1; }
+    .rule-row button { background: #ff4444; color: white; border: none; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
+    .rule-row button:hover { background: #cc0000; }
+    #addRule { background: #4285f4; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-bottom: 12px; }
+    #addRule:hover { background: #3367d6; }
+    .note { font-size: 12px; color: #666; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h3>Tab Group Rules</h3>
+  <div id="rules"></div>
+  <button id="addRule">+ Add Rule</button>
+  <div class="note">
+    Enter domain aliases for a group.<br>
+    Example: Group "google" with domains "youtube.com"
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -29,17 +29,60 @@ function getSecondLevelDomain(url) {
   }
 }
 
+function normalizeDomainPattern(value) {
+  if (!value) return null;
+
+  let normalized = value.trim().toLowerCase();
+  normalized = normalized.replace(/^https?:\/\//, '');
+  normalized = normalized.replace(/^\*\./, '');
+
+  const slashIndex = normalized.indexOf('/');
+  if (slashIndex !== -1) {
+    normalized = normalized.slice(0, slashIndex);
+  }
+
+  if (!normalized) return null;
+
+  const parts = normalized.split('.').filter(Boolean);
+  if (parts.length >= 2) {
+    return parts.slice(-2).join('.');
+  }
+
+  return normalized;
+}
+
+function normalizeRules(rules) {
+  const normalizedRules = {};
+
+  for (const [groupName, domains] of Object.entries(rules || {})) {
+    const cleanGroupName = groupName.trim();
+    if (!cleanGroupName) continue;
+
+    const cleanDomains = [...new Set((domains || [])
+      .map(normalizeDomainPattern)
+      .filter(Boolean))];
+
+    if (cleanDomains.length > 0) {
+      normalizedRules[cleanGroupName] = cleanDomains;
+    }
+  }
+
+  return normalizedRules;
+}
+
 async function getRules() {
   return new Promise((resolve) => {
     chrome.storage.sync.get(['domainRules'], (result) => {
-      resolve(result.domainRules || DEFAULT_RULES);
+      resolve(normalizeRules(result.domainRules || DEFAULT_RULES));
     });
   });
 }
 
 async function saveRules(rules) {
+  const normalizedRules = normalizeRules(rules);
+
   return new Promise((resolve) => {
-    chrome.storage.sync.set({ domainRules: rules }, resolve);
+    chrome.storage.sync.set({ domainRules: normalizedRules }, resolve);
   });
 }
 
@@ -62,33 +105,63 @@ function getAllDomainsForGroup(rules) {
   return domainToGroup;
 }
 
-function getGroupDomains(domain, rules) {
-  const groupName = findGroupForDomain(domain, rules);
-  if (groupName) {
-    return { domains: rules[groupName], groupName };
-  }
-  const truncated = truncateDomain(domain);
-  return { domains: [domain], groupName: truncated };
+function getGroupNameForDomain(domain, rules) {
+  return findGroupForDomain(domain, rules) || truncateDomain(domain);
+}
+
+function isManageableTab(tab) {
+  return Boolean(
+    tab &&
+    !tab.pinned &&
+    tab.url &&
+    tab.url !== 'about:blank' &&
+    !tab.url.startsWith('chrome://') &&
+    !tab.url.startsWith('about:')
+  );
+}
+
+function getManagedDomain(tab) {
+  if (!isManageableTab(tab)) return null;
+  return getSecondLevelDomain(tab.url);
 }
 
 async function getOrCreateGroup(domain, rules) {
-  const { domains, groupName } = getGroupDomains(domain, rules);
+  const groupName = getGroupNameForDomain(domain, rules);
   const groups = await chrome.tabGroups.query({});
   const existing = groups.find(g => g.title === GROUP_PREFIX + groupName);
   if (existing) return existing;
 
   const tabs = await chrome.tabs.query({});
-  const domainToGroup = getAllDomainsForGroup(rules);
-  const domainTabs = tabs.filter(t => {
-    if (t.pinned) return false;
-    const tabDomain = getSecondLevelDomain(t.url);
-    if (!tabDomain) return false;
-    if (domains.includes(tabDomain)) return true;
-    if (domainToGroup.has(tabDomain) && domainToGroup.get(tabDomain) === groupName) return true;
-    return false;
+  const domainTabs = tabs.filter((tab) => {
+    const tabDomain = getManagedDomain(tab);
+    return tabDomain && getGroupNameForDomain(tabDomain, rules) === groupName;
   });
 
   if (domainTabs.length >= 2) {
+    const existingGroupedTab = domainTabs.find(
+      (tab) => tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE
+    );
+
+    if (existingGroupedTab) {
+      await chrome.tabGroups.update(existingGroupedTab.groupId, {
+        title: GROUP_PREFIX + groupName,
+        collapsed: false
+      });
+
+      const tabIdsToMove = domainTabs
+        .filter((tab) => tab.groupId !== existingGroupedTab.groupId)
+        .map((tab) => tab.id);
+
+      if (tabIdsToMove.length > 0) {
+        await chrome.tabs.group({
+          tabIds: tabIdsToMove,
+          groupId: existingGroupedTab.groupId
+        });
+      }
+
+      return chrome.tabGroups.get(existingGroupedTab.groupId);
+    }
+
     const groupId = await chrome.tabs.group({ tabIds: domainTabs.map(t => t.id) });
     await chrome.tabGroups.update(groupId, {
       title: GROUP_PREFIX + groupName,
@@ -96,6 +169,7 @@ async function getOrCreateGroup(domain, rules) {
     });
     return chrome.tabGroups.get(groupId);
   }
+
   return null;
 }
 
@@ -158,7 +232,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
     const rules = await getRules();
     const groups = await chrome.tabGroups.query({});
-    const { groupName } = getGroupDomains(domain, rules);
+    const groupName = getGroupNameForDomain(domain, rules);
     const existingGroup = groups.find(g => g.title === GROUP_PREFIX + groupName);
 
     if (tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE || !existingGroup) {
@@ -226,16 +300,12 @@ chrome.runtime.onInstalled.addListener(async () => {
     const tabs = await chrome.tabs.query({});
     const domainMap = {};
     const rules = await getRules();
-    const domainToGroup = getAllDomainsForGroup(rules);
 
     for (const tab of tabs) {
-      if (!tab || !tab.url || tab.url.startsWith("chrome://")) continue;
-      if (tab.pinned) continue;
-      const domain = getSecondLevelDomain(tab.url);
+      const domain = getManagedDomain(tab);
       if (!domain) continue;
 
-      const mappedGroup = domainToGroup.get(domain);
-      const key = mappedGroup || truncateDomain(domain);
+      const key = getGroupNameForDomain(domain, rules);
       if (!domainMap[key]) domainMap[key] = [];
       if (!domainMap[key].includes(tab.id)) {
         domainMap[key].push(tab.id);
@@ -265,4 +335,78 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     saveRules(request.rules).then(() => sendResponse({ success: true }));
     return true;
   }
+  if (request.action === 'reconcileGroups') {
+    reconcileGroups(request.rules || {}).then(() => sendResponse({ success: true }));
+    return true;
+  }
 });
+
+async function reconcileGroups(rules) {
+  try {
+    rules = normalizeRules(rules);
+
+    const tabs = await chrome.tabs.query({});
+    const groups = await chrome.tabGroups.query({});
+    const tabsByGroup = new Map();
+
+    for (const tab of tabs) {
+      const domain = getManagedDomain(tab);
+      if (!domain) continue;
+
+      const groupName = getGroupNameForDomain(domain, rules);
+      if (!tabsByGroup.has(groupName)) tabsByGroup.set(groupName, []);
+      tabsByGroup.get(groupName).push(tab);
+    }
+
+    for (const [groupName, groupTabs] of tabsByGroup.entries()) {
+      if (groupTabs.length < 2) continue;
+
+      let targetGroup = groups.find(g => g.title === GROUP_PREFIX + groupName);
+
+      if (!targetGroup) {
+        const existingGroupedTab = groupTabs.find(
+          (tab) => tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE
+        );
+
+        if (existingGroupedTab) {
+          try {
+            await chrome.tabGroups.update(existingGroupedTab.groupId, {
+              title: GROUP_PREFIX + groupName,
+              collapsed: false
+            });
+            targetGroup = await chrome.tabGroups.get(existingGroupedTab.groupId);
+          } catch {}
+        }
+      }
+
+      if (targetGroup) {
+        const tabIdsToMove = groupTabs
+          .filter((tab) => tab.groupId !== targetGroup.id)
+          .map((tab) => tab.id);
+
+        if (tabIdsToMove.length > 0) {
+          try {
+            await chrome.tabs.group({ tabIds: tabIdsToMove, groupId: targetGroup.id });
+          } catch {}
+        }
+
+        try {
+          await chrome.tabGroups.update(targetGroup.id, {
+            title: GROUP_PREFIX + groupName,
+            collapsed: false
+          });
+        } catch {}
+      } else {
+        try {
+          const groupId = await chrome.tabs.group({ tabIds: groupTabs.map(t => t.id) });
+          await chrome.tabGroups.update(groupId, {
+            title: GROUP_PREFIX + groupName,
+            collapsed: false
+          });
+        } catch {}
+      }
+    }
+
+    await sortAllGroups();
+  } catch {}
+}
