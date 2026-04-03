@@ -125,19 +125,29 @@ function getManagedDomain(tab) {
   return getSecondLevelDomain(tab.url);
 }
 
-async function getOrCreateGroup(domain, rules) {
+function getBucketKey(windowId, groupName) {
+  return `${windowId}:${groupName}`;
+}
+
+async function getOrCreateGroup(domain, rules, windowId) {
   const groupName = getGroupNameForDomain(domain, rules);
   const groups = await chrome.tabGroups.query({});
-  const existing = groups.find(g => g.title === GROUP_PREFIX + groupName);
+  const existing = groups.find(
+    (group) => group.title === GROUP_PREFIX + groupName && group.windowId === windowId
+  );
   if (existing) return existing;
 
   const tabs = await chrome.tabs.query({});
   const domainTabs = tabs.filter((tab) => {
     const tabDomain = getManagedDomain(tab);
-    return tabDomain && getGroupNameForDomain(tabDomain, rules) === groupName;
+    return (
+      tab.windowId === windowId &&
+      tabDomain &&
+      getGroupNameForDomain(tabDomain, rules) === groupName
+    );
   });
 
-  if (domainTabs.length >= 2) {
+  if (domainTabs.length >= 1) {
     const existingGroupedTab = domainTabs.find(
       (tab) => tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE
     );
@@ -216,7 +226,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
   if (!domain) return;
 
   const rules = await getRules();
-  const group = await getOrCreateGroup(domain, rules);
+  const group = await getOrCreateGroup(domain, rules, tab.windowId);
   if (group) {
     try {
       await chrome.tabs.group({ tabIds: [tab.id], groupId: group.id });
@@ -233,10 +243,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     const rules = await getRules();
     const groups = await chrome.tabGroups.query({});
     const groupName = getGroupNameForDomain(domain, rules);
-    const existingGroup = groups.find(g => g.title === GROUP_PREFIX + groupName);
+    const existingGroup = groups.find(
+      (group) => group.title === GROUP_PREFIX + groupName && group.windowId === tab.windowId
+    );
 
     if (tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE || !existingGroup) {
-      const group = await getOrCreateGroup(domain, rules);
+      const group = await getOrCreateGroup(domain, rules, tab.windowId);
       if (group && tab.groupId !== group.id) {
         try {
           await chrome.tabs.group({ tabIds: [tabId], groupId: group.id });
@@ -256,7 +268,7 @@ chrome.tabs.onMoved.addListener(async (tabInfo) => {
     if (!domain) return;
     if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) return;
     const rules = await getRules();
-    const group = await getOrCreateGroup(domain, rules);
+    const group = await getOrCreateGroup(domain, rules, tab.windowId);
     if (group) {
       try {
         await chrome.tabs.group({ tabIds: [tab.id], groupId: group.id });
@@ -305,20 +317,23 @@ chrome.runtime.onInstalled.addListener(async () => {
       const domain = getManagedDomain(tab);
       if (!domain) continue;
 
-      const key = getGroupNameForDomain(domain, rules);
-      if (!domainMap[key]) domainMap[key] = [];
-      if (!domainMap[key].includes(tab.id)) {
-        domainMap[key].push(tab.id);
+      const groupName = getGroupNameForDomain(domain, rules);
+      const key = getBucketKey(tab.windowId, groupName);
+      if (!domainMap[key]) {
+        domainMap[key] = { windowId: tab.windowId, groupName, tabIds: [] };
+      }
+      if (!domainMap[key].tabIds.includes(tab.id)) {
+        domainMap[key].tabIds.push(tab.id);
       }
     }
 
-    for (const domain of Object.keys(domainMap)) {
-      if (domainMap[domain].length < 2) continue;
+    for (const bucket of Object.values(domainMap)) {
+      if (bucket.tabIds.length < 1) continue;
 
       try {
-        const groupId = await chrome.tabs.group({ tabIds: domainMap[domain] });
+        const groupId = await chrome.tabs.group({ tabIds: bucket.tabIds });
         await chrome.tabGroups.update(groupId, {
-          title: GROUP_PREFIX + domain,
+          title: GROUP_PREFIX + bucket.groupName,
           collapsed: false
         });
       } catch {}
@@ -356,14 +371,20 @@ async function reconcileGroups(rules) {
       if (!domain) continue;
 
       const groupName = getGroupNameForDomain(domain, rules);
-      if (!tabsByGroup.has(groupName)) tabsByGroup.set(groupName, []);
-      tabsByGroup.get(groupName).push(tab);
+      const bucketKey = getBucketKey(tab.windowId, groupName);
+      if (!tabsByGroup.has(bucketKey)) {
+        tabsByGroup.set(bucketKey, { windowId: tab.windowId, groupName, tabs: [] });
+      }
+      tabsByGroup.get(bucketKey).tabs.push(tab);
     }
 
-    for (const [groupName, groupTabs] of tabsByGroup.entries()) {
-      if (groupTabs.length < 2) continue;
+    for (const bucket of tabsByGroup.values()) {
+      const { windowId, groupName, tabs: groupTabs } = bucket;
+      if (groupTabs.length < 1) continue;
 
-      let targetGroup = groups.find(g => g.title === GROUP_PREFIX + groupName);
+      let targetGroup = groups.find(
+        (group) => group.title === GROUP_PREFIX + groupName && group.windowId === windowId
+      );
 
       if (!targetGroup) {
         const existingGroupedTab = groupTabs.find(
@@ -382,13 +403,11 @@ async function reconcileGroups(rules) {
       }
 
       if (targetGroup) {
-        const tabIdsToMove = groupTabs
-          .filter((tab) => tab.groupId !== targetGroup.id)
-          .map((tab) => tab.id);
+        for (const tab of groupTabs) {
+          if (tab.groupId === targetGroup.id) continue;
 
-        if (tabIdsToMove.length > 0) {
           try {
-            await chrome.tabs.group({ tabIds: tabIdsToMove, groupId: targetGroup.id });
+            await chrome.tabs.group({ tabIds: [tab.id], groupId: targetGroup.id });
           } catch {}
         }
 
