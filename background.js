@@ -1,9 +1,14 @@
 const GROUP_PREFIX = "";
-const COMMON_TLDS = ['com', 'org', 'net', 'edu', 'gov', 'io', 'co', 'ai', 'app', 'dev', 'info', 'biz'];
+const COMMON_TLDS = ["com", "org", "net", "edu", "gov", "io", "co", "ai", "app", "dev", "info", "biz"];
 const DEFAULT_RULES = {};
+const RECONCILE_DELAY_MS = 100;
+const NONE_GROUP_ID = -1;
+
+const reconcileTimers = new Map();
+const collapseOverrides = new Map();
 
 function truncateDomain(domain) {
-  const parts = domain.split('.');
+  const parts = domain.split(".");
   if (parts.length >= 2) {
     const tld = parts[parts.length - 1];
     const sld = parts[parts.length - 2];
@@ -12,16 +17,17 @@ function truncateDomain(domain) {
       return sld.substring(0, 4) + sld.substring(sld.length - 4);
     }
   }
+
   if (domain.length <= 8) return domain;
   return domain.substring(0, 4) + domain.substring(domain.length - 4);
 }
 
 function getSecondLevelDomain(url) {
   try {
-    const hostname = new URL(url).hostname;
-    const parts = hostname.split('.');
+    const hostname = new URL(url).hostname.toLowerCase();
+    const parts = hostname.split(".").filter(Boolean);
     if (parts.length >= 2) {
-      return parts.slice(-2).join('.');
+      return parts.slice(-2).join(".");
     }
     return hostname;
   } catch {
@@ -33,19 +39,19 @@ function normalizeDomainPattern(value) {
   if (!value) return null;
 
   let normalized = value.trim().toLowerCase();
-  normalized = normalized.replace(/^https?:\/\//, '');
-  normalized = normalized.replace(/^\*\./, '');
+  normalized = normalized.replace(/^https?:\/\//, "");
+  normalized = normalized.replace(/^\*\./, "");
 
-  const slashIndex = normalized.indexOf('/');
+  const slashIndex = normalized.indexOf("/");
   if (slashIndex !== -1) {
     normalized = normalized.slice(0, slashIndex);
   }
 
   if (!normalized) return null;
 
-  const parts = normalized.split('.').filter(Boolean);
+  const parts = normalized.split(".").filter(Boolean);
   if (parts.length >= 2) {
-    return parts.slice(-2).join('.');
+    return parts.slice(-2).join(".");
   }
 
   return normalized;
@@ -58,10 +64,7 @@ function normalizeRules(rules) {
     const cleanGroupName = groupName.trim();
     if (!cleanGroupName) continue;
 
-    const cleanDomains = [...new Set((domains || [])
-      .map(normalizeDomainPattern)
-      .filter(Boolean))];
-
+    const cleanDomains = [...new Set((domains || []).map(normalizeDomainPattern).filter(Boolean))];
     if (cleanDomains.length > 0) {
       normalizedRules[cleanGroupName] = cleanDomains;
     }
@@ -72,7 +75,7 @@ function normalizeRules(rules) {
 
 async function getRules() {
   return new Promise((resolve) => {
-    chrome.storage.sync.get(['domainRules'], (result) => {
+    chrome.storage.sync.get(["domainRules"], (result) => {
       resolve(normalizeRules(result.domainRules || DEFAULT_RULES));
     });
   });
@@ -86,6 +89,31 @@ async function saveRules(rules) {
   });
 }
 
+function isSplitViewTab(tab) {
+  if (!tab || typeof tab.splitViewId !== "number") return false;
+  if (typeof chrome.tabs.SPLIT_VIEW_ID_NONE === "number") {
+    return tab.splitViewId !== chrome.tabs.SPLIT_VIEW_ID_NONE;
+  }
+  return tab.splitViewId >= 0;
+}
+
+function isManageableTab(tab) {
+  return Boolean(
+    tab &&
+      !tab.pinned &&
+      !isSplitViewTab(tab) &&
+      tab.url &&
+      tab.url !== "about:blank" &&
+      !tab.url.startsWith("chrome://") &&
+      !tab.url.startsWith("about:")
+  );
+}
+
+function getManagedDomain(tab) {
+  if (!isManageableTab(tab)) return null;
+  return getSecondLevelDomain(tab.url);
+}
+
 function findGroupForDomain(domain, rules) {
   for (const [groupName, domains] of Object.entries(rules)) {
     if (domains.includes(domain)) {
@@ -95,339 +123,332 @@ function findGroupForDomain(domain, rules) {
   return null;
 }
 
-function getAllDomainsForGroup(rules) {
-  const domainToGroup = new Map();
-  for (const [groupName, domains] of Object.entries(rules)) {
-    for (const domain of domains) {
-      domainToGroup.set(domain, groupName);
-    }
-  }
-  return domainToGroup;
-}
-
 function getGroupNameForDomain(domain, rules) {
   return findGroupForDomain(domain, rules) || truncateDomain(domain);
 }
 
-function isManageableTab(tab) {
-  return Boolean(
-    tab &&
-    !tab.pinned &&
-    tab.url &&
-    tab.url !== 'about:blank' &&
-    !tab.url.startsWith('chrome://') &&
-    !tab.url.startsWith('about:')
-  );
+function getDesiredGroupName(tab, rules) {
+  const domain = getManagedDomain(tab);
+  if (!domain) return null;
+  return getGroupNameForDomain(domain, rules);
 }
 
-function getManagedDomain(tab) {
-  if (!isManageableTab(tab)) return null;
-  return getSecondLevelDomain(tab.url);
-}
-
-function getBucketKey(windowId, groupName) {
-  return `${windowId}:${groupName}`;
-}
-
-async function getOrCreateGroup(domain, rules, windowId) {
-  const groupName = getGroupNameForDomain(domain, rules);
-  const groups = await chrome.tabGroups.query({});
-  const existing = groups.find(
-    (group) => group.title === GROUP_PREFIX + groupName && group.windowId === windowId
-  );
-  if (existing) return existing;
-
-  const tabs = await chrome.tabs.query({});
-  const domainTabs = tabs.filter((tab) => {
-    const tabDomain = getManagedDomain(tab);
-    return (
-      tab.windowId === windowId &&
-      tabDomain &&
-      getGroupNameForDomain(tabDomain, rules) === groupName
-    );
-  });
-
-  if (domainTabs.length >= 1) {
-    const existingGroupedTab = domainTabs.find(
-      (tab) => tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE
-    );
-
-    if (existingGroupedTab) {
-      await chrome.tabGroups.update(existingGroupedTab.groupId, {
-        title: GROUP_PREFIX + groupName,
-        collapsed: false
-      });
-
-      const tabIdsToMove = domainTabs
-        .filter((tab) => tab.groupId !== existingGroupedTab.groupId)
-        .map((tab) => tab.id);
-
-      if (tabIdsToMove.length > 0) {
-        await chrome.tabs.group({
-          tabIds: tabIdsToMove,
-          groupId: existingGroupedTab.groupId
-        });
-      }
-
-      return chrome.tabGroups.get(existingGroupedTab.groupId);
-    }
-
-    const groupId = await chrome.tabs.group({ tabIds: domainTabs.map(t => t.id) });
-    await chrome.tabGroups.update(groupId, {
-      title: GROUP_PREFIX + groupName,
-      collapsed: false
-    });
-    return chrome.tabGroups.get(groupId);
+function scheduleReconcile(windowId) {
+  const key = typeof windowId === "number" ? String(windowId) : "all";
+  const previousTimer = reconcileTimers.get(key);
+  if (previousTimer) {
+    clearTimeout(previousTimer);
   }
 
-  return null;
-}
-
-async function collapseOtherGroups(activeGroupId) {
-  try {
-    const groups = await chrome.tabGroups.query({});
-    const toCollapse = groups.filter(g =>
-      g &&
-      typeof g.id !== 'undefined' &&
-      g.id !== activeGroupId &&
-      g.collapsed !== true &&
-      g.collapsed !== undefined
-    );
-    await Promise.all(toCollapse.map(g => chrome.tabGroups.update(g.id, { collapsed: true })));
-  } catch (e) {}
-}
-
-async function sortAllGroups() {
-  try {
-    const groups = await chrome.tabGroups.query({});
-    const sorted = groups.sort((a, b) => {
-      const titleA = a && a.title ? a.title : '';
-      const titleB = b && b.title ? b.title : '';
-      return titleA.localeCompare(titleB);
-    });
-    for (const group of sorted) {
-      if (!group || !group.id) continue;
-      try {
-        const tabs = await chrome.tabs.query({ groupId: group.id });
-        for (let j = 0; j < tabs.length; j++) {
-          try {
-            await chrome.tabs.move(tabs[j].id, { index: -1 });
-          } catch {}
-        }
-      } catch {}
-    }
-  } catch {}
-}
-
-chrome.tabs.onCreated.addListener(async (tab) => {
-  if (!tab || !tab.url || tab.url === 'about:blank' || tab.url.startsWith('chrome://') || tab.url.startsWith('about:')) return;
-  if (tab.pinned) return;
-  const domain = getSecondLevelDomain(tab.url);
-  if (!domain) return;
-
-  const rules = await getRules();
-  const group = await getOrCreateGroup(domain, rules, tab.windowId);
-  if (group) {
+  const timer = setTimeout(async () => {
+    reconcileTimers.delete(key);
     try {
-      await chrome.tabs.group({ tabIds: [tab.id], groupId: group.id });
+      if (typeof windowId === "number") {
+        await reconcileWindow(windowId);
+      } else {
+        await reconcileAllWindows();
+      }
+    } catch {}
+  }, RECONCILE_DELAY_MS);
+
+  reconcileTimers.set(key, timer);
+}
+
+async function getWindowGroups(windowId) {
+  const groups = await chrome.tabGroups.query({});
+  return groups.filter((group) => group.windowId === windowId);
+}
+
+async function ungroupExcludedTabs(tabs) {
+  for (const tab of tabs) {
+    if (tab.groupId === NONE_GROUP_ID) continue;
+    if (isManageableTab(tab)) continue;
+
+    try {
+      await chrome.tabs.ungroup(tab.id);
     } catch {}
   }
-});
+}
 
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (tab.pinned) return;
-  if (changeInfo.url) {
-    const domain = getSecondLevelDomain(tab.url);
-    if (!domain) return;
+async function ensureWindowGroups(windowId, tabs, rules) {
+  const buckets = new Map();
 
-    const rules = await getRules();
-    const groups = await chrome.tabGroups.query({});
-    const groupName = getGroupNameForDomain(domain, rules);
-    const existingGroup = groups.find(
-      (group) => group.title === GROUP_PREFIX + groupName && group.windowId === tab.windowId
+  for (const tab of tabs) {
+    const groupName = getDesiredGroupName(tab, rules);
+    if (!groupName) continue;
+
+    if (!buckets.has(groupName)) {
+      buckets.set(groupName, []);
+    }
+    buckets.get(groupName).push(tab);
+  }
+
+  let groups = await getWindowGroups(windowId);
+  const reservedGroupIds = new Set();
+
+  for (const [groupName, bucketTabs] of buckets.entries()) {
+    let targetGroup = groups.find(
+      (group) => group.title === GROUP_PREFIX + groupName && !reservedGroupIds.has(group.id)
     );
 
-    if (tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE || !existingGroup) {
-      const group = await getOrCreateGroup(domain, rules, tab.windowId);
-      if (group && tab.groupId !== group.id) {
+    if (!targetGroup) {
+      const existingGroupedTab = bucketTabs.find((tab) => tab.groupId !== NONE_GROUP_ID);
+      if (existingGroupedTab) {
         try {
-          await chrome.tabs.group({ tabIds: [tabId], groupId: group.id });
+          await chrome.tabGroups.update(existingGroupedTab.groupId, {
+            title: GROUP_PREFIX + groupName,
+            collapsed: false
+          });
+          targetGroup = await chrome.tabGroups.get(existingGroupedTab.groupId);
         } catch {}
       }
     }
-  }
-});
 
-chrome.tabs.onMoved.addListener(async (tabInfo) => {
-  if (!tabInfo || !tabInfo.tabId) return;
-  try {
-    const tab = await chrome.tabs.get(tabInfo.tabId);
-    if (!tab || !tab.url || tab.url === 'about:blank' || tab.url.startsWith('chrome://') || tab.url.startsWith('about:')) return;
-    if (tab.pinned) return;
-    const domain = getSecondLevelDomain(tab.url);
-    if (!domain) return;
-    if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) return;
-    const rules = await getRules();
-    const group = await getOrCreateGroup(domain, rules, tab.windowId);
-    if (group) {
+    if (!targetGroup) {
       try {
-        await chrome.tabs.group({ tabIds: [tab.id], groupId: group.id });
-      } catch {}
-    }
-  } catch {}
-});
-
-chrome.tabGroups.onCreated.addListener(async (group) => {
-  if (group && group.id) {
-    try {
-      await chrome.tabGroups.update(group.id, { collapsed: false });
-    } catch {}
-  }
-  try {
-    await sortAllGroups();
-  } catch {}
-});
-
-chrome.tabGroups.onUpdated.addListener(async (group, changeInfo) => {
-  if (changeInfo && changeInfo.collapsed === false) {
-    await collapseOtherGroups(group.id);
-  }
-  if (changeInfo && changeInfo.title) {
-    await sortAllGroups();
-  }
-});
-
-chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  if (!activeInfo || !activeInfo.tabId) return;
-  try {
-    const tab = await chrome.tabs.get(activeInfo.tabId);
-    if (tab && tab.groupId && tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
-      await collapseOtherGroups(tab.groupId);
-    }
-  } catch {}
-});
-
-chrome.runtime.onInstalled.addListener(async () => {
-  try {
-    const tabs = await chrome.tabs.query({});
-    const domainMap = {};
-    const rules = await getRules();
-
-    for (const tab of tabs) {
-      const domain = getManagedDomain(tab);
-      if (!domain) continue;
-
-      const groupName = getGroupNameForDomain(domain, rules);
-      const key = getBucketKey(tab.windowId, groupName);
-      if (!domainMap[key]) {
-        domainMap[key] = { windowId: tab.windowId, groupName, tabIds: [] };
-      }
-      if (!domainMap[key].tabIds.includes(tab.id)) {
-        domainMap[key].tabIds.push(tab.id);
-      }
-    }
-
-    for (const bucket of Object.values(domainMap)) {
-      if (bucket.tabIds.length < 1) continue;
-
-      try {
-        const groupId = await chrome.tabs.group({ tabIds: bucket.tabIds });
+        const groupId = await chrome.tabs.group({ tabIds: [bucketTabs[0].id] });
         await chrome.tabGroups.update(groupId, {
-          title: GROUP_PREFIX + bucket.groupName,
+          title: GROUP_PREFIX + groupName,
           collapsed: false
         });
-      } catch {}
+        targetGroup = await chrome.tabGroups.get(groupId);
+      } catch {
+        continue;
+      }
     }
 
-    await sortAllGroups();
+    reservedGroupIds.add(targetGroup.id);
+
+    const tabIdsToMove = bucketTabs
+      .filter((tab) => tab.groupId !== targetGroup.id)
+      .map((tab) => tab.id);
+
+    if (tabIdsToMove.length > 0) {
+      try {
+        await chrome.tabs.group({ tabIds: tabIdsToMove, groupId: targetGroup.id });
+      } catch {}
+    }
+  }
+
+  groups = await getWindowGroups(windowId);
+  return groups;
+}
+
+async function cleanupWindowGroups(windowId, rules) {
+  const tabs = await chrome.tabs.query({ windowId });
+  const groups = await getWindowGroups(windowId);
+
+  for (const group of groups) {
+    const groupTabs = tabs.filter((tab) => tab.groupId === group.id);
+    if (groupTabs.length === 0) continue;
+
+    const desiredNames = [...new Set(
+      groupTabs
+        .map((tab) => getDesiredGroupName(tab, rules))
+        .filter(Boolean)
+    )];
+
+    if (desiredNames.length !== 1) continue;
+
+    const desiredTitle = GROUP_PREFIX + desiredNames[0];
+    if (group.title === desiredTitle) continue;
+
+    try {
+      await chrome.tabGroups.update(group.id, {
+        title: desiredTitle,
+        collapsed: false
+      });
+    } catch {}
+  }
+}
+
+async function sortWindowGroups(windowId) {
+  const tabs = await chrome.tabs.query({ windowId });
+  const groups = (await getWindowGroups(windowId)).sort((left, right) => {
+    const leftTitle = left.title || "";
+    const rightTitle = right.title || "";
+    return leftTitle.localeCompare(rightTitle);
+  });
+
+  let insertIndex = tabs.filter((tab) => tab.pinned).length;
+
+  for (const group of groups) {
+    const groupTabs = tabs
+      .filter((tab) => tab.groupId === group.id)
+      .sort((left, right) => left.index - right.index);
+
+    if (groupTabs.length === 0) continue;
+
+    try {
+      await chrome.tabs.move(
+        groupTabs.map((tab) => tab.id),
+        { index: insertIndex }
+      );
+      insertIndex += groupTabs.length;
+    } catch {}
+  }
+}
+
+async function syncCollapsedState(windowId) {
+  const [tabs, groups] = await Promise.all([
+    chrome.tabs.query({ windowId }),
+    getWindowGroups(windowId)
+  ]);
+
+  const override = collapseOverrides.get(windowId);
+
+  if (override === "all-expanded") {
+    for (const group of groups) {
+      if (group.collapsed === false) continue;
+
+      try {
+        await chrome.tabGroups.update(group.id, { collapsed: false });
+      } catch {}
+    }
+    return;
+  }
+
+  const activeTab = tabs.find((tab) => tab.active);
+  const activeGroupId = activeTab && isManageableTab(activeTab) ? activeTab.groupId : NONE_GROUP_ID;
+
+  for (const group of groups) {
+    const shouldCollapse = group.id !== activeGroupId;
+    if (group.collapsed === shouldCollapse) continue;
+
+    try {
+      await chrome.tabGroups.update(group.id, { collapsed: shouldCollapse });
+    } catch {}
+  }
+}
+
+async function setAllGroupsCollapsed(windowId, collapsed) {
+  const groups = await getWindowGroups(windowId);
+
+  for (const group of groups) {
+    if (group.collapsed === collapsed) continue;
+
+    try {
+      await chrome.tabGroups.update(group.id, { collapsed });
+    } catch {}
+  }
+}
+
+async function getCurrentWindowId() {
+  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (activeTab) return activeTab.windowId;
+
+  const currentWindow = await chrome.windows.getLastFocused();
+  return currentWindow.id;
+}
+
+async function reconcileWindow(windowId, providedRules) {
+  const rules = providedRules || await getRules();
+
+  const initialTabs = await chrome.tabs.query({ windowId });
+  await ungroupExcludedTabs(initialTabs);
+
+  const freshTabs = await chrome.tabs.query({ windowId });
+  await ensureWindowGroups(windowId, freshTabs, rules);
+  await cleanupWindowGroups(windowId, rules);
+  await sortWindowGroups(windowId);
+  await syncCollapsedState(windowId);
+}
+
+async function reconcileAllWindows(providedRules) {
+  const rules = providedRules || await getRules();
+  const tabs = await chrome.tabs.query({});
+  const windowIds = [...new Set(tabs.map((tab) => tab.windowId))];
+
+  for (const windowId of windowIds) {
+    await reconcileWindow(windowId, rules);
+  }
+}
+
+chrome.tabs.onCreated.addListener((tab) => {
+  scheduleReconcile(tab.windowId);
+});
+
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  scheduleReconcile(removeInfo.windowId);
+});
+
+chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
+  scheduleReconcile(moveInfo.windowId);
+});
+
+chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
+  scheduleReconcile(attachInfo.newWindowId);
+});
+
+chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
+  scheduleReconcile(detachInfo.oldWindowId);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (
+    changeInfo.url === undefined &&
+    changeInfo.pinned === undefined &&
+    changeInfo.splitViewId === undefined
+  ) {
+    return;
+  }
+
+  scheduleReconcile(tab.windowId);
+});
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  collapseOverrides.delete(activeInfo.windowId);
+  scheduleReconcile(activeInfo.windowId);
+});
+
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  if (windowId !== chrome.windows.WINDOW_ID_NONE) {
+    scheduleReconcile(windowId);
+  }
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  scheduleReconcile();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  scheduleReconcile();
+});
+
+chrome.commands.onCommand.addListener(async (command) => {
+  try {
+    const windowId = await getCurrentWindowId();
+
+    const timer = reconcileTimers.get(String(windowId));
+    if (timer) {
+      clearTimeout(timer);
+      reconcileTimers.delete(String(windowId));
+    }
+
+    if (command === "expand-all-groups") {
+      collapseOverrides.set(windowId, "all-expanded");
+      await setAllGroupsCollapsed(windowId, false);
+      return;
+    }
   } catch {}
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'getRules') {
+  if (request.action === "getRules") {
     getRules().then(sendResponse);
     return true;
   }
-  if (request.action === 'saveRules') {
+
+  if (request.action === "saveRules") {
     saveRules(request.rules).then(() => sendResponse({ success: true }));
     return true;
   }
-  if (request.action === 'reconcileGroups') {
-    reconcileGroups(request.rules || {}).then(() => sendResponse({ success: true }));
+
+  if (request.action === "reconcileGroups") {
+    const rules = normalizeRules(request.rules || {});
+    reconcileAllWindows(rules).then(() => sendResponse({ success: true }));
     return true;
   }
+
+  return false;
 });
-
-async function reconcileGroups(rules) {
-  try {
-    rules = normalizeRules(rules);
-
-    const tabs = await chrome.tabs.query({});
-    const groups = await chrome.tabGroups.query({});
-    const tabsByGroup = new Map();
-
-    for (const tab of tabs) {
-      const domain = getManagedDomain(tab);
-      if (!domain) continue;
-
-      const groupName = getGroupNameForDomain(domain, rules);
-      const bucketKey = getBucketKey(tab.windowId, groupName);
-      if (!tabsByGroup.has(bucketKey)) {
-        tabsByGroup.set(bucketKey, { windowId: tab.windowId, groupName, tabs: [] });
-      }
-      tabsByGroup.get(bucketKey).tabs.push(tab);
-    }
-
-    for (const bucket of tabsByGroup.values()) {
-      const { windowId, groupName, tabs: groupTabs } = bucket;
-      if (groupTabs.length < 1) continue;
-
-      let targetGroup = groups.find(
-        (group) => group.title === GROUP_PREFIX + groupName && group.windowId === windowId
-      );
-
-      if (!targetGroup) {
-        const existingGroupedTab = groupTabs.find(
-          (tab) => tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE
-        );
-
-        if (existingGroupedTab) {
-          try {
-            await chrome.tabGroups.update(existingGroupedTab.groupId, {
-              title: GROUP_PREFIX + groupName,
-              collapsed: false
-            });
-            targetGroup = await chrome.tabGroups.get(existingGroupedTab.groupId);
-          } catch {}
-        }
-      }
-
-      if (targetGroup) {
-        for (const tab of groupTabs) {
-          if (tab.groupId === targetGroup.id) continue;
-
-          try {
-            await chrome.tabs.group({ tabIds: [tab.id], groupId: targetGroup.id });
-          } catch {}
-        }
-
-        try {
-          await chrome.tabGroups.update(targetGroup.id, {
-            title: GROUP_PREFIX + groupName,
-            collapsed: false
-          });
-        } catch {}
-      } else {
-        try {
-          const groupId = await chrome.tabs.group({ tabIds: groupTabs.map(t => t.id) });
-          await chrome.tabGroups.update(groupId, {
-            title: GROUP_PREFIX + groupName,
-            collapsed: false
-          });
-        } catch {}
-      }
-    }
-
-    await sortAllGroups();
-  } catch {}
-}

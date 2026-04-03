@@ -4,6 +4,15 @@
   "version": "1.0",
   "description": "Automatically groups tabs by second-level domain and collapses groups",
   "permissions": ["tabs", "tabGroups", "storage"],
+  "commands": {
+    "expand-all-groups": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+0",
+        "mac": "Command+Shift+0"
+      },
+      "description": "Expand all tab groups in the current window"
+    }
+  },
   "action": {
     "default_popup": "popup.html"
   },
