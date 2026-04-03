@@ -313,6 +313,8 @@ chrome.runtime.onInstalled.addListener(async () => {
     }
 
     for (const domain of Object.keys(domainMap)) {
+      if (domainMap[domain].length < 2) continue;
+
       try {
         const groupId = await chrome.tabs.group({ tabIds: domainMap[domain] });
         await chrome.tabGroups.update(groupId, {
