@@ -1,15 +1,2 @@
-# Dev/bookmark scripts not part of the extension
-bookmark-audit.js
-bookmark-audit.json
-bookmark-classified.json
-bookmark-classify.js
-bookmark-export.devbrowser.js
-bookmark-topics-build.js
-bookmark-topics-test.devbrowser.js
-bookmark-topics.devbrowser.js
-make-data.js
-tfidf-classify.js
-tfidf-clusters.json
-icons/source.jpg
-rusty-tab-manager.zip
+*.zip
 AGENTS.md
