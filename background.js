@@ -8,18 +8,8 @@ const reconcileTimers = new Map();
 const collapseOverrides = new Map();
 
 function truncateDomain(domain) {
-  const parts = domain.split(".");
-  if (parts.length >= 2) {
-    const tld = parts[parts.length - 1];
-    const sld = parts[parts.length - 2];
-    if (COMMON_TLDS.includes(tld)) {
-      if (sld.length <= 8) return sld;
-      return sld.substring(0, 4) + sld.substring(sld.length - 4);
-    }
-  }
-
-  if (domain.length <= 8) return domain;
-  return domain.substring(0, 4) + domain.substring(domain.length - 4);
+  const prefix = domain.split(".")[0];
+  return prefix.length > 8 ? prefix.substring(0, 8) : prefix;
 }
 
 function getSecondLevelDomain(url) {

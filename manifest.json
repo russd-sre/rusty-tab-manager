@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Tab Group Manager",
+  "name": "Rusty Tab Manager",
   "version": "1.0",
-  "description": "Automatically groups tabs by second-level domain and collapses groups",
+  "description": "Automatically groups tabs by second-level domain and collapses other groups when switching tabs.",
   "permissions": ["tabs", "tabGroups", "storage"],
   "commands": {
     "expand-all-groups": {
@@ -13,7 +13,17 @@
       "description": "Expand all tab groups in the current window"
     }
   },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
     "default_popup": "popup.html"
   },
   "background": {
