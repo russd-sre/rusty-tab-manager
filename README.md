@@ -5,7 +5,8 @@ A Chrome extension that keeps your tabs organised automatically.
 ## Features
 
 - **Auto-grouping** — tabs are grouped by second-level domain as soon as they open. All `*.google.com` tabs go into a `google` group, all `*.github.com` tabs into a `github` group, and so on.
-- **Auto-collapse** — clicking a tab in one group collapses all other groups, so only the active group is expanded at any time.
+- **Custom rules** — define your own grouping rules via the popup UI. Map multiple domains to a single named group (e.g. group `google.com`, `youtube.com`, and `gmail.com` under "Google"). Rules are synced across devices via Chrome storage.
+- **Auto-collapse** — switching to a tab collapses all other groups, so only the active group is expanded at any time.
 - **Sorted groups** — tab groups are kept in alphabetical order at all times.
 - **Keyboard shortcut** — `Cmd+Shift+0` (Mac) / `Ctrl+Shift+0` (Windows/Linux) expands all groups at once.
 
@@ -13,7 +14,7 @@ A Chrome extension that keeps your tabs organised automatically.
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/gitboy/rusty-tab-manager.git
+   git clone https://github.com/russd-sre/rusty-tab-manager.git
    ```
 2. Open Chrome and navigate to `chrome://extensions`
 3. Enable **Developer mode** (top-right toggle)
