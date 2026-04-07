@@ -102,6 +102,22 @@ document.getElementById("rules").addEventListener("click", async (e) => {
   renderRules(rules);
 });
 
+document.getElementById("rescan").addEventListener("click", async () => {
+  const btn = document.getElementById("rescan");
+  btn.disabled = true;
+  btn.textContent = "Scanning...";
+  try {
+    const rules = await loadRules();
+    await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: "reconcileGroups", rules }, resolve);
+    });
+  } catch (err) {
+    console.warn("rescan failed:", err);
+  }
+  btn.textContent = "Re-scan Tabs";
+  btn.disabled = false;
+});
+
 document.getElementById("rules").addEventListener("input", debouncedSaveAndReconcile);
 
 loadRules().then(renderRules);

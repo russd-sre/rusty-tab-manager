@@ -178,9 +178,15 @@ async function ensureWindowGroups(windowId, tabs, rules) {
     );
 
     if (!targetGroup) {
-      const existingGroupedTab = bucketTabs.find(
-        (tab) => tab.groupId !== NONE_GROUP_ID
-      );
+      const existingGroupedTab = bucketTabs.find((tab) => {
+        if (tab.groupId === NONE_GROUP_ID) return false;
+        if (reservedGroupIds.has(tab.groupId)) return false;
+        const group = groups.find((g) => g.id === tab.groupId);
+        if (group && buckets.has(group.title) && group.title !== groupName) {
+          return false;
+        }
+        return true;
+      });
       if (existingGroupedTab) {
         try {
           await chrome.tabGroups.update(existingGroupedTab.groupId, {
