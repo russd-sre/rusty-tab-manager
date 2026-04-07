@@ -4,6 +4,7 @@ const NONE_GROUP_ID = chrome.tabGroups?.TAB_GROUP_ID_NONE ?? -1;
 
 const reconcileTimers = new Map();
 const collapseOverrides = new Map();
+let suppressReconcile = false;
 
 function truncateDomain(domain) {
   const prefix = domain.split(".")[0];
@@ -116,6 +117,7 @@ function getDesiredGroupName(tab, rules) {
 }
 
 function scheduleReconcile(windowId) {
+  if (suppressReconcile) return;
   const key = typeof windowId === "number" ? String(windowId) : "all";
   const previousTimer = reconcileTimers.get(key);
   if (previousTimer) {
@@ -156,9 +158,12 @@ async function ungroupExcludedTabs(tabs) {
 }
 
 async function ensureWindowGroups(windowId, tabs, rules) {
+  const audioGroupId = await getAudioGroupId(windowId);
   const buckets = new Map();
 
   for (const tab of tabs) {
+    if (audioGroupId && tab.groupId === audioGroupId) continue;
+
     const groupName = getDesiredGroupName(tab, rules);
     if (!groupName) continue;
 
@@ -241,6 +246,8 @@ async function cleanupWindowGroups(windowId, tabs, rules) {
   const groups = await getWindowGroups(windowId);
 
   for (const group of groups) {
+    if (group.title === "audio") continue;
+
     const groupTabs = tabs.filter((tab) => tab.groupId === group.id);
     if (groupTabs.length === 0) continue;
 
@@ -384,6 +391,10 @@ chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.groupId === NONE_GROUP_ID) {
+    scheduleReconcile(tab.windowId);
+    return;
+  }
   if (changeInfo.url === undefined && changeInfo.pinned === undefined) {
     return;
   }
@@ -409,8 +420,51 @@ chrome.runtime.onStartup.addListener(() => {
   scheduleReconcile();
 });
 
+async function getAudioGroupId(windowId) {
+  const groups = await getWindowGroups(windowId);
+  const audioGroup = groups.find((g) => g.title === "audio");
+  return audioGroup ? audioGroup.id : null;
+}
+
+function cancelPendingReconciles() {
+  for (const [key, timer] of reconcileTimers) {
+    clearTimeout(timer);
+  }
+  reconcileTimers.clear();
+}
+
+async function groupAudioTabs(windowId) {
+  suppressReconcile = true;
+  try {
+    const audibleTabs = await chrome.tabs.query({ windowId, audible: true });
+    if (audibleTabs.length === 0) return;
+
+    const groups = await getWindowGroups(windowId);
+    const existingAudioGroup = groups.find((g) => g.title === "audio");
+
+    const tabIds = audibleTabs.map((tab) => tab.id);
+
+    if (existingAudioGroup) {
+      await chrome.tabs.group({ tabIds, groupId: existingAudioGroup.id });
+      await chrome.tabGroups.update(existingAudioGroup.id, { collapsed: false });
+    } else {
+      const groupId = await chrome.tabs.group({ tabIds });
+      await chrome.tabGroups.update(groupId, {
+        title: "audio",
+        color: "yellow",
+        collapsed: false,
+      });
+    }
+
+    await sortWindowGroups(windowId);
+  } finally {
+    suppressReconcile = false;
+    cancelPendingReconciles();
+  }
+}
+
 chrome.commands.onCommand.addListener(async (command) => {
-  if (command !== "expand-all-groups") return;
+  if (command !== "expand-all-groups" && command !== "group-audio-tabs") return;
 
   try {
     const [activeTab] = await chrome.tabs.query({
@@ -421,16 +475,16 @@ chrome.commands.onCommand.addListener(async (command) => {
       ? activeTab.windowId
       : (await chrome.windows.getLastFocused()).id;
 
-    const timer = reconcileTimers.get(String(windowId));
-    if (timer) {
-      clearTimeout(timer);
-      reconcileTimers.delete(String(windowId));
-    }
+    cancelPendingReconciles();
 
-    collapseOverrides.set(windowId, "all-expanded");
-    await expandAllGroups(windowId);
+    if (command === "group-audio-tabs") {
+      await groupAudioTabs(windowId);
+    } else {
+      collapseOverrides.set(windowId, "all-expanded");
+      await expandAllGroups(windowId);
+    }
   } catch (err) {
-    console.warn("expand-all-groups command failed:", err);
+    console.warn(command + " command failed:", err);
   }
 });
 

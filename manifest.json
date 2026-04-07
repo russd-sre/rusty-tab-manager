@@ -8,9 +8,16 @@
     "expand-all-groups": {
       "suggested_key": {
         "default": "Ctrl+Shift+0",
-        "mac": "Command+Shift+0"
+        "mac": "MacCtrl+Shift+0"
       },
       "description": "Expand all tab groups in the current window"
+    },
+    "group-audio-tabs": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+9",
+        "mac": "MacCtrl+Shift+A"
+      },
+      "description": "Group all tabs playing audio into an audio group"
     }
   },
   "icons": {
