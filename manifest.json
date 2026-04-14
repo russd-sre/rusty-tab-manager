@@ -12,12 +12,26 @@
       },
       "description": "Expand all tab groups in the current window"
     },
+    "collapse-all-groups": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+8",
+        "mac": "MacCtrl+Shift+8"
+      },
+      "description": "Collapse all tab groups in the current window"
+    },
     "group-audio-tabs": {
       "suggested_key": {
         "default": "Ctrl+Shift+9",
         "mac": "MacCtrl+Shift+A"
       },
       "description": "Group all tabs playing audio into an audio group"
+    },
+    "ungroup-audio-tabs": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+7",
+        "mac": "MacCtrl+Shift+U"
+      },
+      "description": "Ungroup audio tabs and return them to their domain groups"
     }
   },
   "icons": {

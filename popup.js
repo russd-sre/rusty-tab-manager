@@ -118,6 +118,23 @@ document.getElementById("rescan").addEventListener("click", async () => {
   btn.disabled = false;
 });
 
+document.getElementById("expandAll").addEventListener("click", () => {
+  chrome.runtime.sendMessage({ action: "expandAllGroups" });
+});
+
+document.getElementById("collapseAll").addEventListener("click", () => {
+  chrome.runtime.sendMessage({ action: "collapseAllGroups" });
+});
+
+document.getElementById("ungroupAudio").addEventListener("click", () => {
+  chrome.runtime.sendMessage({ action: "ungroupAudioTabs" });
+});
+
+document.getElementById("closeGrouped").addEventListener("click", () => {
+  if (!confirm("Close all grouped tabs? Pinned tabs will be kept.")) return;
+  chrome.runtime.sendMessage({ action: "closeAllGroupedTabs" });
+});
+
 document.getElementById("rules").addEventListener("input", debouncedSaveAndReconcile);
 
 loadRules().then(renderRules);
