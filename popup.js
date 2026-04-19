@@ -139,8 +139,21 @@ document.getElementById("closeGrouped").addEventListener("click", () => {
   chrome.runtime.sendMessage({ action: "closeAllGroupedTabs" });
 });
 
-document.getElementById("ungroupAll").addEventListener("click", () => {
-  chrome.runtime.sendMessage({ action: "ungroupAllTabs" });
+const groupingBtn = document.getElementById("toggleGrouping");
+
+function applyUngroupedState(ungrouped) {
+  groupingBtn.textContent = ungrouped ? "Regroup All" : "Ungroup All";
+  groupingBtn.classList.toggle("ungrouped", ungrouped);
+}
+
+groupingBtn.addEventListener("click", () => {
+  chrome.runtime.sendMessage({ action: "toggleGrouping" }, (response) => {
+    applyUngroupedState(response?.ungrouped ?? false);
+  });
+});
+
+chrome.runtime.sendMessage({ action: "getUngrouped" }, (response) => {
+  applyUngroupedState(response?.ungrouped ?? false);
 });
 
 const pauseBtn = document.getElementById("togglePause");
@@ -156,8 +169,8 @@ pauseBtn.addEventListener("click", () => {
   applyPausedState(nowPaused);
 });
 
-chrome.runtime.sendMessage({ action: "getPaused" }, ({ paused }) => {
-  applyPausedState(paused);
+chrome.runtime.sendMessage({ action: "getPaused" }, (response) => {
+  applyPausedState(response?.paused ?? false);
 });
 
 document.getElementById("rules").addEventListener("input", debouncedSaveAndReconcile);

@@ -6,9 +6,11 @@ const reconcileTimers = new Map();
 const collapseOverrides = new Map();
 let suppressReconcile = false;
 let userPaused = false;
+let tabsUngrouped = false;
 
-chrome.storage.local.get(["paused"], (result) => {
+chrome.storage.local.get(["paused", "ungrouped"], (result) => {
   userPaused = Boolean(result.paused);
+  tabsUngrouped = Boolean(result.ungrouped);
 });
 
 function truncateDomain(domain) {
@@ -122,7 +124,7 @@ function getDesiredGroupName(tab, rules) {
 }
 
 function scheduleReconcile(windowId) {
-  if (suppressReconcile || userPaused) return;
+  if (suppressReconcile || userPaused || tabsUngrouped) return;
   const key = typeof windowId === "number" ? String(windowId) : "all";
   const previousTimer = reconcileTimers.get(key);
   if (previousTimer) {
@@ -409,6 +411,18 @@ async function ungroupAllTabs(windowId) {
     suppressReconcile = false;
     cancelPendingReconciles();
   }
+  tabsUngrouped = true;
+  await new Promise((resolve) => {
+    chrome.storage.local.set({ ungrouped: true }, resolve);
+  });
+}
+
+async function regroupAllTabs() {
+  tabsUngrouped = false;
+  await new Promise((resolve) => {
+    chrome.storage.local.set({ ungrouped: false }, resolve);
+  });
+  await reconcileAllWindows();
 }
 
 async function setPaused(value) {
@@ -634,7 +648,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === "getPaused") {
     sendResponse({ paused: userPaused });
-    return true;
+    return false;
   }
 
   if (request.action === "setPaused") {
@@ -642,14 +656,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  if (request.action === "ungroupAllTabs") {
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }, async ([activeTab]) => {
-      const windowId = activeTab
-        ? activeTab.windowId
-        : (await chrome.windows.getLastFocused()).id;
-      await ungroupAllTabs(windowId);
-      sendResponse({ success: true });
-    });
+  if (request.action === "getUngrouped") {
+    sendResponse({ ungrouped: tabsUngrouped });
+    return false;
+  }
+
+  if (request.action === "toggleGrouping") {
+    (async () => {
+      if (tabsUngrouped) {
+        await regroupAllTabs();
+      } else {
+        const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        const windowId = activeTab
+          ? activeTab.windowId
+          : (await chrome.windows.getLastFocused()).id;
+        await ungroupAllTabs(windowId);
+      }
+      sendResponse({ ungrouped: tabsUngrouped });
+    })();
     return true;
   }
 
