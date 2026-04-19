@@ -126,6 +126,10 @@ document.getElementById("collapseAll").addEventListener("click", () => {
   chrome.runtime.sendMessage({ action: "collapseAllGroups" });
 });
 
+document.getElementById("groupAudio").addEventListener("click", () => {
+  chrome.runtime.sendMessage({ action: "groupAudioTabs" });
+});
+
 document.getElementById("ungroupAudio").addEventListener("click", () => {
   chrome.runtime.sendMessage({ action: "ungroupAudioTabs" });
 });
@@ -133,6 +137,27 @@ document.getElementById("ungroupAudio").addEventListener("click", () => {
 document.getElementById("closeGrouped").addEventListener("click", () => {
   if (!confirm("Close all grouped tabs? Pinned tabs will be kept.")) return;
   chrome.runtime.sendMessage({ action: "closeAllGroupedTabs" });
+});
+
+document.getElementById("ungroupAll").addEventListener("click", () => {
+  chrome.runtime.sendMessage({ action: "ungroupAllTabs" });
+});
+
+const pauseBtn = document.getElementById("togglePause");
+
+function applyPausedState(paused) {
+  pauseBtn.textContent = paused ? "Resume" : "Pause";
+  pauseBtn.classList.toggle("paused", paused);
+}
+
+pauseBtn.addEventListener("click", () => {
+  const nowPaused = !pauseBtn.classList.contains("paused");
+  chrome.runtime.sendMessage({ action: "setPaused", paused: nowPaused });
+  applyPausedState(nowPaused);
+});
+
+chrome.runtime.sendMessage({ action: "getPaused" }, ({ paused }) => {
+  applyPausedState(paused);
 });
 
 document.getElementById("rules").addEventListener("input", debouncedSaveAndReconcile);

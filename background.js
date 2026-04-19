@@ -5,6 +5,11 @@ const NONE_GROUP_ID = chrome.tabGroups?.TAB_GROUP_ID_NONE ?? -1;
 const reconcileTimers = new Map();
 const collapseOverrides = new Map();
 let suppressReconcile = false;
+let userPaused = false;
+
+chrome.storage.local.get(["paused"], (result) => {
+  userPaused = Boolean(result.paused);
+});
 
 function truncateDomain(domain) {
   const prefix = domain.split(".")[0];
@@ -117,7 +122,7 @@ function getDesiredGroupName(tab, rules) {
 }
 
 function scheduleReconcile(windowId) {
-  if (suppressReconcile) return;
+  if (suppressReconcile || userPaused) return;
   const key = typeof windowId === "number" ? String(windowId) : "all";
   const previousTimer = reconcileTimers.get(key);
   if (previousTimer) {
@@ -391,6 +396,28 @@ async function ungroupAudioTabs(windowId) {
   scheduleReconcile(windowId);
 }
 
+async function ungroupAllTabs(windowId) {
+  suppressReconcile = true;
+  try {
+    const tabs = await chrome.tabs.query({ windowId });
+    const tabIds = tabs
+      .filter((tab) => !tab.pinned && tab.groupId !== NONE_GROUP_ID)
+      .map((tab) => tab.id);
+    if (tabIds.length === 0) return;
+    await chrome.tabs.ungroup(tabIds);
+  } finally {
+    suppressReconcile = false;
+    cancelPendingReconciles();
+  }
+}
+
+async function setPaused(value) {
+  userPaused = value;
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ paused: value }, resolve);
+  });
+}
+
 async function closeAllGroupedTabs(windowId) {
   const tabs = await chrome.tabs.query({ windowId });
   const tabIdsToClose = tabs
@@ -583,12 +610,44 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === "groupAudioTabs") {
+    chrome.tabs.query({ active: true, lastFocusedWindow: true }, async ([activeTab]) => {
+      const windowId = activeTab
+        ? activeTab.windowId
+        : (await chrome.windows.getLastFocused()).id;
+      await groupAudioTabs(windowId);
+      sendResponse({ success: true });
+    });
+    return true;
+  }
+
   if (request.action === "ungroupAudioTabs") {
     chrome.tabs.query({ active: true, lastFocusedWindow: true }, async ([activeTab]) => {
       const windowId = activeTab
         ? activeTab.windowId
         : (await chrome.windows.getLastFocused()).id;
       await ungroupAudioTabs(windowId);
+      sendResponse({ success: true });
+    });
+    return true;
+  }
+
+  if (request.action === "getPaused") {
+    sendResponse({ paused: userPaused });
+    return true;
+  }
+
+  if (request.action === "setPaused") {
+    setPaused(request.paused).then(() => sendResponse({ success: true }));
+    return true;
+  }
+
+  if (request.action === "ungroupAllTabs") {
+    chrome.tabs.query({ active: true, lastFocusedWindow: true }, async ([activeTab]) => {
+      const windowId = activeTab
+        ? activeTab.windowId
+        : (await chrome.windows.getLastFocused()).id;
+      await ungroupAllTabs(windowId);
       sendResponse({ success: true });
     });
     return true;

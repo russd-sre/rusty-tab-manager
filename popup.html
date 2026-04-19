@@ -19,6 +19,10 @@
     .controls button:hover { background: #555; }
     #closeGrouped { background: #c62828; }
     #closeGrouped:hover { background: #8b0000; }
+    #togglePause { background: #e65100; }
+    #togglePause:hover { background: #bf360c; }
+    #togglePause.paused { background: #2e7d32; }
+    #togglePause.paused:hover { background: #1b5e20; }
     .note { font-size: 12px; color: #666; margin-top: 12px; }
   </style>
 </head>
@@ -30,8 +34,11 @@
   <div class="controls">
     <button id="expandAll">Expand All</button>
     <button id="collapseAll">Collapse All</button>
+    <button id="groupAudio">Group Audio</button>
     <button id="ungroupAudio">Ungroup Audio</button>
+    <button id="ungroupAll">Ungroup All</button>
     <button id="closeGrouped">Close All Groups</button>
+    <button id="togglePause">Pause</button>
   </div>
   <div class="note">
     Enter domain aliases for a group.<br>
